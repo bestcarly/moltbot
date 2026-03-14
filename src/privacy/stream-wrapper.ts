@@ -9,6 +9,7 @@ import type {
   Context as PiContext,
   Message,
   TextContent,
+  ToolResultMessage,
   UserMessage,
 } from "@mariozechner/pi-ai";
 import { PrivacyDetector } from "./detector.js";
@@ -51,6 +52,16 @@ export function createPrivacyFilterContext(
     storePath: cfg.mappings.storePath || undefined,
     salt: cfg.encryption.salt || undefined,
   });
+
+  // Clean up expired mappings before loading session data so the mapping
+  // file does not grow unbounded beyond the configured retention window.
+  if (cfg.mappings.ttl > 0) {
+    try {
+      store.cleanup(cfg.mappings.ttl);
+    } catch {
+      // Non-fatal — stale mappings remain but are functionally harmless.
+    }
+  }
 
   // Load existing session mappings.
   const existing = store.loadSession(sessionId);
@@ -122,6 +133,16 @@ export function filterMessages(messages: Message[], ctx: PrivacyFilterContext): 
       }
       return next;
     }
+    // toolResult messages carry tool output that is forwarded to the LLM on
+    // follow-up turns — they can contain secrets returned by tools, so we must
+    // filter their text content blocks too.
+    if (msg.role === "toolResult") {
+      const next = filterToolResultMessage(msg, ctx);
+      if (next !== msg) {
+        changed = true;
+      }
+      return next;
+    }
     return msg;
   });
 
@@ -142,15 +163,27 @@ export function wrapStreamFnPrivacyFilter(
   }
 
   return (model, context, options) => {
-    // Filter outbound messages.
+    // Filter outbound messages and system prompt.
     const ctx = context;
     const messages = ctx.messages;
 
     let nextContext: PiContext = context;
+    let contextChanged = false;
+
     if (Array.isArray(messages)) {
       const filtered = filterMessages(messages, privacyCtx);
       if (filtered !== messages) {
         nextContext = { ...ctx, messages: filtered };
+        contextChanged = true;
+      }
+    }
+
+    // Also filter systemPrompt — it can contain secrets injected by prompt hooks
+    // and is forwarded verbatim to providers like openai-ws-stream (as `instructions`).
+    if (typeof ctx.systemPrompt === "string" && ctx.systemPrompt) {
+      const filteredPrompt = filterText(ctx.systemPrompt, privacyCtx);
+      if (filteredPrompt !== ctx.systemPrompt) {
+        nextContext = { ...(contextChanged ? nextContext : ctx), systemPrompt: filteredPrompt };
       }
     }
 
@@ -233,6 +266,19 @@ function restoreStreamChunk(
     }
   }
 
+  // Handle tool-call argument deltas — the model may echo masked secrets into
+  // tool arguments; downstream code accumulates these deltas and executes the
+  // tool with them, so we must restore placeholders here too.
+  if (chunk.type === "toolcall_delta" && chunk.delta && typeof chunk.delta === "object") {
+    const delta = chunk.delta as Record<string, unknown>;
+    if (typeof delta.arguments === "string") {
+      const restored = restoreText(delta.arguments, ctx);
+      if (restored !== delta.arguments) {
+        return { ...chunk, delta: { ...delta, arguments: restored } };
+      }
+    }
+  }
+
   return chunk;
 }
 
@@ -272,6 +318,26 @@ function filterAssistantMessage(
   msg: AssistantMessage,
   ctx: PrivacyFilterContext,
 ): AssistantMessage {
+  let changed = false;
+  const nextContent = msg.content.map((block) => {
+    if (block.type !== "text") {
+      return block;
+    }
+    const replaced = filterText(block.text, ctx);
+    if (replaced === block.text) {
+      return block;
+    }
+    changed = true;
+    return { ...block, text: replaced } satisfies TextContent;
+  });
+
+  return changed ? { ...msg, content: nextContent } : msg;
+}
+
+function filterToolResultMessage(
+  msg: ToolResultMessage,
+  ctx: PrivacyFilterContext,
+): ToolResultMessage {
   let changed = false;
   const nextContent = msg.content.map((block) => {
     if (block.type !== "text") {

@@ -300,7 +300,9 @@ export class PrivacyDetector {
 
     if (ctx.mustContain) {
       // At least one of the context keywords must appear nearby.
-      const found = ctx.mustContain.some((kw) => context.includes(kw.toLowerCase()));
+      const found = ctx.mustContain.some(
+        (kw) => typeof kw === "string" && context.includes(kw.toLowerCase()),
+      );
       if (!found) {
         return false;
       }
@@ -308,7 +310,7 @@ export class PrivacyDetector {
 
     if (ctx.mustNotContain) {
       for (const kw of ctx.mustNotContain) {
-        if (context.includes(kw.toLowerCase())) {
+        if (typeof kw === "string" && context.includes(kw.toLowerCase())) {
           return false;
         }
       }

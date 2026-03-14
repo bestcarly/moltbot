@@ -159,6 +159,21 @@ export function validateUserRule(rule: UserDefinedRule, index: number): RuleVali
     });
   }
 
+  // Validate that every keyword entry is a string. Non-string values (e.g. numbers
+  // from malformed JSON5) would later cause escapeRegex to throw inside
+  // PrivacyDetector.loadRules, crashing session startup.
+  if (Array.isArray(rule.keywords)) {
+    const badIdx = rule.keywords.findIndex((kw) => typeof kw !== "string");
+    if (badIdx !== -1) {
+      errors.push({
+        ruleIndex: index,
+        type,
+        field: "keywords",
+        message: `keywords[${badIdx}] must be a string (got ${typeof rule.keywords[badIdx]})`,
+      });
+    }
+  }
+
   if (rule.pattern) {
     const regexError = validateRegexSafety(rule.pattern);
     if (regexError) {

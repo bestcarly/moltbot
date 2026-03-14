@@ -105,21 +105,36 @@ function redactText(text: string, patterns: RegExp[]): string {
   return next;
 }
 
-function resolveConfigRedaction(): RedactOptions {
-  let cfg: OpenClawConfig["logging"] | undefined;
+type ResolvedConfig = {
+  redactOptions: RedactOptions;
+  privacyEnabled: boolean;
+  privacyRules: string | undefined;
+};
+
+function resolveConfigRedaction(): ResolvedConfig {
+  let loggingCfg: OpenClawConfig["logging"] | undefined;
+  let privacyCfg: OpenClawConfig["privacy"] | undefined;
   try {
     const loaded = requireConfig?.("../config/config.js") as
       | {
           loadConfig?: () => OpenClawConfig;
         }
       | undefined;
-    cfg = loaded?.loadConfig?.().logging;
+    const full = loaded?.loadConfig?.();
+    loggingCfg = full?.logging;
+    privacyCfg = full?.privacy;
   } catch {
-    cfg = undefined;
+    loggingCfg = undefined;
+    privacyCfg = undefined;
   }
   return {
-    mode: normalizeMode(cfg?.redactSensitive),
-    patterns: cfg?.redactPatterns,
+    redactOptions: {
+      mode: normalizeMode(loggingCfg?.redactSensitive),
+      patterns: loggingCfg?.redactPatterns,
+    },
+    // When privacy is not configured at all we treat it as enabled (safe default).
+    privacyEnabled: privacyCfg?.enabled !== false,
+    privacyRules: privacyCfg?.rules,
   };
 }
 
@@ -127,7 +142,7 @@ export function redactSensitiveText(text: string, options?: RedactOptions): stri
   if (!text) {
     return text;
   }
-  const resolved = options ?? resolveConfigRedaction();
+  const resolved = options ?? resolveConfigRedaction().redactOptions;
   if (normalizeMode(resolved.mode) === "off") {
     return text;
   }
@@ -140,24 +155,40 @@ export function redactSensitiveText(text: string, options?: RedactOptions): stri
 
 export function redactToolDetail(detail: string): string {
   const resolved = resolveConfigRedaction();
-  if (normalizeMode(resolved.mode) !== "tools") {
+  if (normalizeMode(resolved.redactOptions.mode) !== "tools") {
     return detail;
   }
-  return redactWithPrivacyFilter(detail, resolved);
+  return redactWithPrivacyFilter(
+    detail,
+    resolved.redactOptions,
+    resolved.privacyEnabled,
+    resolved.privacyRules,
+  );
 }
 
 export function getDefaultRedactPatterns(): string[] {
   return [...DEFAULT_REDACT_PATTERNS];
 }
 
-// Lazy-initialized shared detector for log redaction.
-let sharedDetector: PrivacyDetector | undefined;
+// Cache the last detector instance keyed by ruleset to avoid re-construction
+// on every log line while still respecting user-configured rules.
+let cachedDetector: PrivacyDetector | undefined;
+let cachedDetectorRules: string | undefined;
 
 /**
  * Enhanced redaction that combines the existing pattern-based redaction
  * with the privacy detection engine for broader coverage.
+ *
+ * Respects `privacy.enabled` — when false, only the pattern-based pass runs.
+ * Respects `privacy.rules` — uses the configured ruleset instead of always
+ * defaulting to "extended".
  */
-export function redactWithPrivacyFilter(text: string, options?: RedactOptions): string {
+export function redactWithPrivacyFilter(
+  text: string,
+  options?: RedactOptions,
+  privacyEnabled = true,
+  privacyRules: string | undefined = undefined,
+): string {
   if (!text) {
     return text;
   }
@@ -166,11 +197,19 @@ export function redactWithPrivacyFilter(text: string, options?: RedactOptions): 
   let result = redactSensitiveText(text, options);
 
   // Second pass: privacy detector for additional coverage.
+  // Skip entirely when the user has opted out of privacy features.
+  if (!privacyEnabled) {
+    return result;
+  }
+
   try {
-    if (!sharedDetector) {
-      sharedDetector = new PrivacyDetector("extended");
+    const rules = privacyRules ?? "extended";
+    // Re-create the detector only when the ruleset changes.
+    if (!cachedDetector || cachedDetectorRules !== rules) {
+      cachedDetector = new PrivacyDetector(rules);
+      cachedDetectorRules = rules;
     }
-    const detected = sharedDetector.detect(result);
+    const detected = cachedDetector.detect(result);
     if (detected.hasPrivacyRisk) {
       // Apply mask-style redaction (not replacement) for log output.
       const sorted = [...detected.matches].toSorted((a, b) => b.start - a.start);

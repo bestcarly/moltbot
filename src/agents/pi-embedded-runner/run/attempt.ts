@@ -21,7 +21,6 @@ import type {
 import {
   createPrivacyFilterContext,
   wrapStreamFnPrivacyFilter,
-  filterPrompt,
   type PrivacyFilterContext,
 } from "../../../privacy/stream-wrapper.js";
 import { isSubagentSessionKey } from "../../../routing/session-key.js";
@@ -1331,10 +1330,12 @@ export async function runEmbeddedAttempt(
               });
           }
 
-          // Apply privacy filter to the prompt text before sending to LLM.
-          if (privacyCtx) {
-            effectivePrompt = filterPrompt(effectivePrompt, privacyCtx);
-          }
+          // Privacy filtering is handled by wrapStreamFnPrivacyFilter on the
+          // streamFn boundary — it filters all outbound messages (including
+          // the prompt once it becomes a user message) and the systemPrompt.
+          // Applying filterPrompt here as well would create cascaded mappings
+          // (original → placeholder1 → placeholder2) that restore() cannot
+          // fully reverse, leaking unresolved placeholders to the user.
 
           // Only pass images option if there are actually images to pass
           // This avoids potential issues with models that don't expect the images parameter

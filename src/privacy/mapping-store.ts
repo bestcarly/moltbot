@@ -11,6 +11,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -144,7 +145,8 @@ export class PrivacyMappingStore {
 
   /** Load only mappings for a specific session. */
   loadSession(sessionId: string): PrivacyMapping[] {
-    return this.load().filter((m) => m.sessionId === sessionId);
+    // Use write-lock so we cannot observe a partially-written file from another concurrent instance.
+    return this.withWriteLock(() => this.load().filter((m) => m.sessionId === sessionId));
   }
 
   /** Append new mappings (merges with existing). */
@@ -201,7 +203,12 @@ export class PrivacyMappingStore {
     ensureDir(dir);
     const json = JSON.stringify(mappings);
     const encrypted = encrypt(json, this.key);
-    writeFileSync(this.storePath, encrypted, { mode: FILE_MODE_OWNER_RW });
+    // Write to a temp file then rename for atomic replacement — prevents a partial
+    // file if the process is killed mid-write.
+    const tmpPath = `${this.storePath}.tmp`;
+    writeFileSync(tmpPath, encrypted, { mode: FILE_MODE_OWNER_RW });
+    ensureOwnerOnlyPermissions(tmpPath);
+    renameSync(tmpPath, this.storePath);
     ensureOwnerOnlyPermissions(this.storePath);
   }
 
@@ -217,6 +224,11 @@ export class PrivacyMappingStore {
   private withWriteLock<T>(fn: () => T): T {
     const startedAt = Date.now();
     let lockFd: number | null = null;
+
+    // Ensure the parent directory exists before attempting to open the lock file.
+    // Without this, a custom storePath in a new directory would throw ENOENT and
+    // the error would be swallowed by filterText, silently losing all mappings.
+    ensureDir(dirname(this.lockPath));
 
     while (lockFd === null) {
       try {
