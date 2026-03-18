@@ -26,9 +26,7 @@ const IV_LENGTH = 16;
 const AUTH_TAG_LENGTH = 16;
 const PBKDF2_ITERATIONS = 100_000;
 const PBKDF2_DIGEST = "sha512";
-const LOCK_WAIT_TIMEOUT_MS = 2_000;
 const LOCK_STALE_AFTER_MS = 30_000;
-const LOCK_RETRY_MS = 25;
 const FILE_MODE_OWNER_RW = 0o600;
 const DIR_MODE_OWNER_RWX = 0o700;
 
@@ -85,16 +83,6 @@ function loadOrCreateMachinePassphrase(customPath?: string): string {
   writeFileSync(path, secret, { mode: FILE_MODE_OWNER_RW });
   ensureOwnerOnlyPermissions(path);
   return secret.toString("base64");
-}
-
-function sleepMs(ms: number): void {
-  // Atomics.wait() throws on the Node.js main thread, so use a busy-wait
-  // with hrtime for sub-millisecond accuracy. This only runs during lock
-  // contention retries, which are rare and short-lived.
-  const end = process.hrtime.bigint() + BigInt(ms) * 1_000_000n;
-  while (process.hrtime.bigint() < end) {
-    // spin
-  }
 }
 
 /** Encrypt a plaintext string. Returns a Buffer: [IV (16)] [authTag (16)] [ciphertext]. */
@@ -228,7 +216,6 @@ export class PrivacyMappingStore {
   }
 
   private withWriteLock<T>(fn: () => T): T {
-    const startedAt = Date.now();
     let lockFd: number | null = null;
 
     // Ensure the parent directory exists before attempting to open the lock file.
@@ -236,27 +223,24 @@ export class PrivacyMappingStore {
     // the error would be swallowed by filterText, silently losing all mappings.
     ensureDir(dirname(this.lockPath));
 
-    while (lockFd === null) {
-      try {
+    try {
+      lockFd = openSync(this.lockPath, "wx", FILE_MODE_OWNER_RW);
+    } catch (err) {
+      const ioErr = err as NodeJS.ErrnoException;
+      if (ioErr.code !== "EEXIST") {
+        throw err;
+      }
+
+      if (this.isLockStale()) {
+        try {
+          unlinkSync(this.lockPath);
+        } catch {
+          // Another process may have already removed/replaced it.
+        }
         lockFd = openSync(this.lockPath, "wx", FILE_MODE_OWNER_RW);
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== "EEXIST") {
-          throw err;
-        }
-
-        if (this.isLockStale()) {
-          try {
-            unlinkSync(this.lockPath);
-          } catch {
-            // Another process may have already removed/replaced it.
-          }
-          continue;
-        }
-
-        if (Date.now() - startedAt > LOCK_WAIT_TIMEOUT_MS) {
-          throw new Error(`privacy mapping store lock timeout: ${this.lockPath}`, { cause: err });
-        }
-        sleepMs(LOCK_RETRY_MS);
+      } else {
+        // Fail fast on active lock contention so we do not block the main thread.
+        throw new Error(`privacy mapping store lock busy: ${this.lockPath}`, { cause: err });
       }
     }
 

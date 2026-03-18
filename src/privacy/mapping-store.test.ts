@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -155,6 +155,22 @@ describe("PrivacyMappingStore", () => {
       store.save([makeMappingData("1", "s1")]);
 
       expect(existsSync(join(dir, "nested", "master.key"))).toBe(true);
+    });
+  });
+
+  describe("lock contention", () => {
+    it("fails fast when lock file is held by another process", () => {
+      const dir = mkdtempSync(join(tmpdir(), "privacy-test-"));
+      cleanups.push(dir);
+      const storePath = join(dir, "locked-mappings.enc");
+      const lockPath = `${storePath}.lock`;
+      writeFileSync(lockPath, "locked");
+
+      const store = new PrivacyMappingStore({ storePath, salt: "test-salt" });
+      const started = Date.now();
+      expect(() => store.save([makeMappingData("1", "s1")])).toThrow(/lock busy/);
+      const elapsedMs = Date.now() - started;
+      expect(elapsedMs).toBeLessThan(500);
     });
   });
 });

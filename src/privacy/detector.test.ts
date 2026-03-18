@@ -152,6 +152,27 @@ describe("PrivacyDetector", () => {
     });
   });
 
+  describe("pattern + keywords combination", () => {
+    it("matches keyword entries even when rule also defines pattern", () => {
+      const customDetector = new PrivacyDetector([
+        {
+          type: "combo_rule",
+          description: "Pattern + keyword combo",
+          enabled: true,
+          riskLevel: "high",
+          pattern: "SECRET_[0-9]+",
+          keywords: ["fallback-secret"],
+        },
+      ]);
+
+      const keywordOnly = customDetector.detect("contains fallback-secret only");
+      expect(keywordOnly.matches.some((m) => m.type === "combo_rule")).toBe(true);
+
+      const patternOnly = customDetector.detect("contains SECRET_123 only");
+      expect(patternOnly.matches.some((m) => m.type === "combo_rule")).toBe(true);
+    });
+  });
+
   describe("risk levels", () => {
     it("reports correct highest risk level", () => {
       const result = detector.detect("password=secret123 email: test@test.com");

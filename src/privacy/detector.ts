@@ -261,8 +261,9 @@ export class PrivacyDetector {
       }
     }
 
-    // Keyword matching (only if no pattern, or separate keyword entries)
-    if (rule.keywords && !rule.pattern) {
+    // Keyword matching can coexist with regex rules. Some custom rules use
+    // pattern for one secret shape plus keywords as a fallback.
+    if (rule.keywords) {
       for (const kwRe of compiled.keywordPatterns) {
         kwRe.lastIndex = 0;
         let m: RegExpExecArray | null;
