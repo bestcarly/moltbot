@@ -372,6 +372,14 @@ function restoreStreamChunk(
     }
   }
 
+  if (chunk.type === "message_end" && "message" in chunk) {
+    const message = chunk.message;
+    const restored = restoreUnknownStrings(message, ctx);
+    if (restored !== message) {
+      return { ...chunk, message: restored };
+    }
+  }
+
   return chunk;
 }
 
