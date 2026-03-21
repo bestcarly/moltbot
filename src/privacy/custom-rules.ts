@@ -272,6 +272,15 @@ export function validateUserRule(rule: UserDefinedRule, index: number): RuleVali
     });
   }
 
+  if (rule.caseSensitive !== undefined && typeof rule.caseSensitive !== "boolean") {
+    errors.push({
+      ruleIndex: index,
+      type,
+      field: "caseSensitive",
+      message: "caseSensitive must be a boolean",
+    });
+  }
+
   if (rule.validateFn && !NAMED_VALIDATORS[rule.validateFn]) {
     errors.push({
       ruleIndex: index,

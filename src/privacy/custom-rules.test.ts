@@ -268,6 +268,20 @@ describe("custom-rules", () => {
       ).toBe(true);
     });
 
+    it("rejects non-boolean caseSensitive values", () => {
+      const rule = {
+        type: "project_codename",
+        description: "Internal codename",
+        riskLevel: "high",
+        keywords: ["Phoenix"],
+        caseSensitive: "false",
+      } as unknown as UserDefinedRule;
+      const errors = validateUserRule(rule, 0);
+      expect(
+        errors.some((e) => e.field === "caseSensitive" && e.message.includes("must be a boolean")),
+      ).toBe(true);
+    });
+
     it("rejects unknown validateFn", () => {
       const rule: UserDefinedRule = {
         type: "test_rule",

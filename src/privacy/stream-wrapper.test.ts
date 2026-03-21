@@ -557,5 +557,46 @@ describe("stream-wrapper integration", () => {
       expect(JSON.stringify(event.message)).toContain(original);
       expect(JSON.stringify(event.message)).not.toContain("pf_");
     });
+
+    it("restores placeholders in done message payloads", async () => {
+      const ctx = createPrivacyFilterContext("test-session");
+      const original = "admin@company.com";
+      filterText(`contact ${original}`, ctx);
+      const replacement = ctx.replacer.getMappings()[0]?.replacement;
+      if (!replacement) {
+        throw new Error("expected replacement mapping");
+      }
+
+      const baseFn: StreamFn = () =>
+        ({
+          async *[Symbol.asyncIterator]() {
+            yield {
+              type: "done",
+              reason: "stop",
+              message: assistantMessage([{ type: "text", text: `final ${replacement}` }]),
+            };
+          },
+        }) as unknown as ReturnType<StreamFn>;
+
+      const wrapped = wrapStreamFnPrivacyFilter(baseFn, ctx);
+      const stream = wrapped(
+        {
+          api: "openai-completions",
+          provider: "openai",
+          id: "gpt-test",
+        } as Parameters<StreamFn>[0],
+        { messages: [] },
+      );
+
+      const events: Array<Record<string, unknown>> = [];
+      for await (const event of stream as AsyncIterable<Record<string, unknown>>) {
+        events.push(event);
+      }
+
+      expect(events).toHaveLength(1);
+      const event = events[0];
+      expect(JSON.stringify(event.message)).toContain(original);
+      expect(JSON.stringify(event.message)).not.toContain("pf_");
+    });
   });
 });
